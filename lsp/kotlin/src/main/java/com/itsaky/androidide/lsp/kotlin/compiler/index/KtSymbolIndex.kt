@@ -93,6 +93,7 @@ internal class KtSymbolIndex(
 			fileIndex = fileIndex,
 			sourceIndex = sourceIndex,
 			scope = scope,
+			withLiveKtFile = { path, block -> withLiveKtFileAsync(path) { block(it) } },
 		)
 
 	private val scanningWorker =
@@ -397,7 +398,7 @@ internal class KtSymbolIndex(
 	/** Suspending [withLiveKtFile], for callers that must not block a dispatcher thread. */
 	suspend fun <R> withLiveKtFileAsync(
 		path: Path,
-		block: (LiveKtFile) -> R,
+		block: suspend (LiveKtFile) -> R,
 	): R? {
 		val pin = acquirePinAsync(path) ?: return null
 		try {

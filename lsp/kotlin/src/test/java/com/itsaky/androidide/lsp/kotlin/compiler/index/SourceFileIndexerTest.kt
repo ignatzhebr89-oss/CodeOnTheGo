@@ -13,6 +13,7 @@ import org.appdevforall.codeonthego.indexing.jvm.JvmSymbolIndex
 import org.appdevforall.codeonthego.indexing.jvm.KtFileMetadataDescriptor
 import org.appdevforall.codeonthego.indexing.jvm.KtFileMetadataIndex
 import org.appdevforall.codeonthego.indexing.util.BackgroundIndexer
+import org.jetbrains.kotlin.psi.KtFile
 import org.junit.Test
 import java.io.FileNotFoundException
 import java.nio.file.NoSuchFileException
@@ -26,6 +27,16 @@ class SourceFileIndexerTest : KtLspTest() {
 	}
 
 	private fun buildFileIndex() = KtFileMetadataIndex(InMemoryIndex(KtFileMetadataDescriptor))
+
+	private suspend fun index(
+		file: KtFile,
+		fileIndex: KtFileMetadataIndex,
+		symbolsIndex: JvmSymbolIndex,
+		cancelChecker: ICancelChecker,
+	): Boolean =
+		env.ktSymbolIndex.withLiveKtFileAsync(file.virtualFile.toNioPath()) { live ->
+			indexSourceFile(env.project, live, fileIndex, symbolsIndex, cancelChecker)
+		} == true
 
 	@Test
 	fun `indexer ignores local property inside function body`(): Unit =
@@ -52,7 +63,7 @@ class SourceFileIndexerTest : KtLspTest() {
 
 			val symbolsIndex = buildSymbolIndex()
 
-			indexSourceFile(env.project, file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
+			index(file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
 
 			val names = symbolsIndex.findByPrefix("").map { it.shortName }.toSet()
 			assertThat(names).containsExactly("doWork", "fetchStatus")
@@ -74,7 +85,7 @@ class SourceFileIndexerTest : KtLspTest() {
 
 			val symbolsIndex = buildSymbolIndex()
 
-			indexSourceFile(env.project, file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
+			index(file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
 
 			val names = symbolsIndex.findByPrefix("").map { it.shortName }.toSet()
 			assertThat(names).containsExactly("outer")
@@ -94,7 +105,7 @@ class SourceFileIndexerTest : KtLspTest() {
 
 			val symbolsIndex = buildSymbolIndex()
 
-			indexSourceFile(env.project, file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
+			index(file, mockk(relaxed = true), symbolsIndex, ICancelChecker.NOOP)
 
 			val names = symbolsIndex.findByPrefix("").map { it.shortName }.toSet()
 			assertThat(names).containsExactly("globalConfig", "compute")
@@ -105,7 +116,7 @@ class SourceFileIndexerTest : KtLspTest() {
 		runBlocking {
 			val file = createSourceFile("Fresh.kt", "fun fresh() = 0")
 
-			val wrote = indexSourceFile(env.project, file, buildFileIndex(), buildSymbolIndex(), ICancelChecker.NOOP)
+			val wrote = index(file, buildFileIndex(), buildSymbolIndex(), ICancelChecker.NOOP)
 
 			assertThat(wrote).isTrue()
 		}
@@ -116,9 +127,9 @@ class SourceFileIndexerTest : KtLspTest() {
 			val file = createSourceFile("Unchanged.kt", "fun unchanged() = 0")
 			val fileIndex = buildFileIndex()
 			val symbolsIndex = buildSymbolIndex()
-			indexSourceFile(env.project, file, fileIndex, symbolsIndex, ICancelChecker.NOOP)
+			index(file, fileIndex, symbolsIndex, ICancelChecker.NOOP)
 
-			val wrote = indexSourceFile(env.project, file, fileIndex, symbolsIndex, ICancelChecker.NOOP)
+			val wrote = index(file, fileIndex, symbolsIndex, ICancelChecker.NOOP)
 
 			assertThat(wrote).isFalse()
 		}
@@ -136,7 +147,7 @@ class SourceFileIndexerTest : KtLspTest() {
 					override fun visibleSourceIds(): Collection<String>? = null
 				}
 
-			val wrote = indexSourceFile(env.project, file, buildFileIndex(), symbolsIndex, ICancelChecker.NOOP)
+			val wrote = index(file, buildFileIndex(), symbolsIndex, ICancelChecker.NOOP)
 
 			assertThat(wrote).isFalse()
 		}

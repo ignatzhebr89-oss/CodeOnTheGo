@@ -2,8 +2,6 @@ package com.itsaky.androidide.lsp.kotlin.compiler.index
 
 import com.itsaky.androidide.lsp.kotlin.compiler.modules.AnalysisPriority
 import com.itsaky.androidide.lsp.kotlin.compiler.modules.ScheduledCancelChecker
-import com.itsaky.androidide.lsp.kotlin.compiler.modules.UnpinnedAnalysis
-import com.itsaky.androidide.lsp.kotlin.compiler.modules.analyzeMaybeDangling
 import com.itsaky.androidide.lsp.kotlin.compiler.modules.backingFilePath
 import com.itsaky.androidide.lsp.kotlin.compiler.read
 import com.itsaky.androidide.lsp.kotlin.utils.toNioPathOrNull
@@ -99,15 +97,18 @@ internal fun KtFile.toMetadata(
 	}
 
 /**
- * Indexes [ktFile]'s declarations into [symbolsIndex] and records it in [fileIndex].
+ * Indexes [live]'s declarations into [symbolsIndex] and records it in [fileIndex].
+ *
+ * Takes the pinned file rather than a bare [KtFile]: FIR resolves an open path to its live instance,
+ * so analysing the disk copy or a superseded edit version finds no FIR for its declarations
+ * ("No fir element was found", ADFA-5763).
  *
  * Returns true only when it wrote the file's symbols; false when the file was unchanged, could not
  * be analyzed, or an index was closed.
  */
-@OptIn(UnpinnedAnalysis::class)
 internal suspend fun indexSourceFile(
 	project: Project,
-	ktFile: KtFile,
+	live: LiveKtFile,
 	fileIndex: KtFileMetadataIndex,
 	symbolsIndex: JvmSymbolIndex,
 	cancelChecker: ICancelChecker,
@@ -125,7 +126,7 @@ internal suspend fun indexSourceFile(
 	// Re-check disposal *inside* the read lock so it is atomic with toMetadata()'s PSI access:
 	// the fast-path check above can race a concurrent disposal before toMetadata enters its read.
 	val newFile =
-		project.read {
+		live.read { ktFile ->
 			if (project.isDisposed) return@read null
 			ktFile.toMetadata(project, isIndexed = true)
 		} ?: return false
@@ -152,25 +153,21 @@ internal suspend fun indexSourceFile(
 	// the app instead of degrading. CancellationException is rethrown first to keep cancellation intact.
 	val symbols =
 		try {
-			project.read {
-				// Atomic w.r.t. the read lock: bail if the project was disposed before we acquired it.
-				if (project.isDisposed) return@read emptyList()
-
+			// Disposal under the read lock surfaces from analyzing() as a CancellationException.
+			live.analyzing(AnalysisPriority.INDEXING, checker) { ktFile ->
+				val session = this
 				val list = mutableListOf<JvmSymbol>()
-				analyzeMaybeDangling(ktFile, AnalysisPriority.INDEXING, checker) {
-					val session = this
-					ktFile.accept(
-						object : KtTreeVisitorVoid() {
-							override fun visitDeclaration(dcl: KtDeclaration) {
-								checker.abortIfCancelled()
-								val symbol = with(session) { analyzeDeclaration(newFile.filePath, dcl) }
-								checker.abortIfCancelled()
-								symbol?.let { list.add(it) }
-								super.visitDeclaration(dcl)
-							}
-						},
-					)
-				}
+				ktFile.accept(
+					object : KtTreeVisitorVoid() {
+						override fun visitDeclaration(dcl: KtDeclaration) {
+							checker.abortIfCancelled()
+							val symbol = with(session) { analyzeDeclaration(newFile.filePath, dcl) }
+							checker.abortIfCancelled()
+							symbol?.let { list.add(it) }
+							super.visitDeclaration(dcl)
+						}
+					},
+				)
 				list
 			}
 		} catch (e: CancellationException) {

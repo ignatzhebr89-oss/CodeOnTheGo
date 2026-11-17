@@ -28,6 +28,8 @@ internal class IndexWorker(
 	private val fileIndex: KtFileMetadataIndex,
 	private val sourceIndex: JvmSymbolIndex,
 	private val scope: CoroutineScope,
+	/** [KtSymbolIndex.withLiveKtFileAsync]: indexing must analyse the instance FIR resolves the path to. */
+	private val withLiveKtFile: suspend (Path, suspend (LiveKtFile) -> Boolean) -> Boolean?,
 ) {
 	companion object {
 		private val logger = LoggerFactory.getLogger(IndexWorker::class.java)
@@ -59,7 +61,8 @@ internal class IndexWorker(
 					logger.debug("Indexing modified file: {}", path)
 					try {
 						// Not counted in sourceIndexCount: this runs on another coroutine, and an edit is not part of a pass.
-						indexSourceFile(project, ktFile, fileIndex, sourceIndex, cancelChecker)
+						// The pin indexes the newest version, not ktFile, which a later edit may have superseded.
+						withLiveKtFile(path) { live -> indexSourceFile(project, live, fileIndex, sourceIndex, cancelChecker) }
 					} catch (e: AnalysisPreemptedException) {
 						// Preempted by higher-priority analysis; re-queue so the edit still gets indexed.
 						logger.debug("Indexing of modified file {} preempted; re-queueing", path)
@@ -247,32 +250,28 @@ internal class IndexWorker(
 			return IndexOutcome.SKIPPED
 		}
 
-		val ktFile =
-			project.read {
-				PsiManager
-					.getInstance(project)
-					.findFile(cmd.vf) as? KtFile
-			}
-				// probably a non-kotlin file
-				?: return IndexOutcome.SKIPPED
-
 		return try {
 			// cmd.vf.path is not a plain field read (it builds a system-independent
 			// path string), so it must not be computed when nothing records it.
 			val detail = if (Memprof.sink != null) cmd.vf.path else null
 			val wrote =
 				Memprof.section("Index Kotlin file", detail) {
-					indexSourceFile(
-						project = project,
-						ktFile = ktFile,
-						fileIndex = fileIndex,
-						symbolsIndex = sourceIndex,
-						// A real (cancellable) checker so the scheduler can preempt this pass
-						// in favour of completion/diagnostics.
-						cancelChecker = ICancelChecker.Default(),
-					)
+					// Pinned, not PsiManager's disk copy: for an open file FIR resolves the path to the
+					// live buffer, so the disk copy's declarations have no FIR (ADFA-5763).
+					withLiveKtFile(cmd.vf.toNioPath()) { live ->
+						indexSourceFile(
+							project = project,
+							live = live,
+							fileIndex = fileIndex,
+							symbolsIndex = sourceIndex,
+							// A real (cancellable) checker so the scheduler can preempt this pass
+							// in favour of completion/diagnostics.
+							cancelChecker = ICancelChecker.Default(),
+						)
+					}
 				}
-			if (wrote) IndexOutcome.INDEXED else IndexOutcome.SKIPPED
+			// null: probably a non-kotlin file
+			if (wrote == true) IndexOutcome.INDEXED else IndexOutcome.SKIPPED
 		} catch (e: AnalysisPreemptedException) {
 			IndexOutcome.PREEMPTED
 		}

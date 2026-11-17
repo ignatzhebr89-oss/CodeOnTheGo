@@ -72,6 +72,7 @@ class IndexWorkerPhaseLifecycleTest {
 			fileIndex = fileIndex,
 			sourceIndex = sourceIndex,
 			scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+			withLiveKtFile = { _, block -> block(mockk()) },
 		)
 	}
 
@@ -321,6 +322,7 @@ class IndexWorkerPhaseLifecycleTest {
 		val vf = mockk<VirtualFile>()
 		every { vf.fileSystem.protocol } returns "file"
 		every { vf.path } returns "/project/src/Sample.kt"
+		every { vf.toNioPath() } returns Path.of("/project/src/Sample.kt")
 		return vf
 	}
 

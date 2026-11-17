@@ -45,6 +45,7 @@ class IndexWorkerDisposalTest : KtLspTest() {
 					fileIndex = fileIndex(),
 					sourceIndex = jvmIndex(),
 					scope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+					withLiveKtFile = { path, block -> env.ktSymbolIndex.withLiveKtFileAsync(path) { block(it) } },
 				)
 
 			/*
